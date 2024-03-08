@@ -54,6 +54,8 @@
 (defvar org-msg-attachment '()
   "Temporary variable to pass the list of attachment.")
 
+(defvar paul-org-msg-aliases '())
+
 (defvar org-msg-mml nil
   "Temporary variable to pass the MML content.")
 
@@ -793,6 +795,19 @@ absolute paths."
   (org-msg-with-match-prop prop
     (replace-match (format "%S" val) nil nil nil 3)))
 
+(defun paul-file-alias (file)
+  "Check if an alias file name has been set, else return nil."
+  (let ((attachment-aliases paul-org-msg-aliases))
+    (if attachment-aliases
+      (let ((file-alias-match (assoc file attachment-aliases)))
+        (if file-alias-match
+          (cdr file-alias-match)
+        )
+      )
+    )
+  )
+)
+
 (defun org-msg-build (org)
   "Build and return the XML tree for ORG string."
   (let ((css (org-msg-load-css)))
@@ -947,6 +962,7 @@ This function is a hook for `message-send-hook'."
           (dolist (file attachments)
             (unless (file-exists-p file)
               (error "File '%s' does not exist" file)))
+          (setq paul-org-msg-aliases (org-msg-get-prop "aliases"))
           ;; Clear the contents of the message
           (goto-char (org-msg-start))
           (delete-region (org-msg-start) (point-max))
@@ -969,8 +985,13 @@ This function is a hook for `message-send-hook'."
                 (when (> (length org-msg-alternatives) 1)
                   (forward-line))
                 (dolist (file attachments)
-                  (mml-insert-tag 'part 'type (org-msg-file-mime-type file)
-                                  'filename file 'disposition "attachment"))
+                  (let ((file-alias (paul-file-alias file)))
+                    (if file-alias
+                      (mml-insert-tag 'part 'type (org-msg-file-mime-type file)
+                                      'filename file 'recipient-filename file-alias 'disposition "attachment")
+                      (mml-insert-tag 'part 'type (org-msg-file-mime-type file)
+                                      'filename file 'disposition "attachment")))
+                )
 		(when mml
 		  (insert mml)))
             (mml-insert-part "text/html")
@@ -1004,9 +1025,16 @@ variable set by `org-msg-prepare-to-send'."
     ;; Generate this list of attachment parts
     (dolist (file org-msg-attachment)
       (let ((type (org-msg-file-mime-type file)))
-	(push (list 'part `(type . ,type) `(filename . ,file)
-		    '(disposition . "attachment"))
-	      newparts)))
+          (let ((file-alias (paul-file-alias file)))
+            (if file-alias
+                (push (list 'part `(type . ,type) `(filename . ,file)
+                        '(recipient-filename . ,file-alias) '(disposition . "attachment"))
+                      newparts)
+                (push (list 'part `(type . ,type) `(filename . ,file)
+                        '(disposition . "attachment"))
+                      newparts)
+            ))
+    ))
     (let ((alternative (if (eq (car cont) 'multipart) (list cont) cont)))
       ;; Generate and insert any non-html alternatives
       (when (> (length org-msg-alternatives) 1)
@@ -1102,7 +1130,7 @@ used to automatically greet the right name, see
 REPLY-TO is the file path of the original email export in HTML."
   (concat (format "#+OPTIONS: %s d:nil\n#+STARTUP: %s\n"
 		  (or org-msg-options "") (or org-msg-startup ""))
-	  (format ":PROPERTIES:\n:reply-to: %S\n:attachment: nil\n:alternatives: %s\n:END:\n"
+	  (format ":PROPERTIES:\n:reply-to: %S\n:attachment: nil\n:alternatives: %s\n:aliases: nil\n:END:\n"
 		  reply-to alternatives)))
 
 (defun org-msg-article-htmlp ()
@@ -1270,6 +1298,14 @@ function is called.  `org-cycle' is called otherwise."
   (let* ((files (org-msg-get-prop "attachment"))
 	 (d (completing-read "File to remove: " files)))
     (org-msg-set-prop "attachment" (delete d files))))
+
+(defun paul-org-msg-add-aliased-file (file alias)
+  "Link FILE into the list of attachments, but use a different name on recipient side."
+  (let ((files (org-msg-get-prop "attachment"))
+        (aliases (org-msg-get-prop "aliases")))
+    (org-msg-set-prop "attachment" (push file files))
+    (org-msg-set-prop "aliases" (cons (cons file alias) aliases))
+    ))
 
 (defun org-msg-attach ()
   "The dispatcher for attachment commands.
